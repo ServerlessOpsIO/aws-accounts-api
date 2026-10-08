@@ -1,0 +1,183 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  aws-accounts-api
+
+  API for managing AWS accounts
+
+
+Parameters:
+  Domain:
+    Type: String
+    Description: 'Name of Domain'
+
+  System:
+    Type: String
+    Description: "Name of System"
+
+  Component:
+    Type: String
+    Description: "Name of Component"
+
+  CodeBranch:
+    Type: String
+    Description: "Name of GitHub Branch"
+
+  Hostname:
+    Type: String
+    Description: Site FQDN
+
+  DnsZoneId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Description: Route53 Hosted Zone ID
+
+  CognitoUserPoolArn:
+    Type: String
+    Description: Cognito User Pool ARN
+
+  StateMachineLogRetentionInDays:
+    Type: Number
+    Description: "Number of days to retain state machine logs"
+    Default: 30
+
+
+Resources:
+  ########
+  # Step Functions
+  ########
+  CreateAccountStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: STANDARD
+      DefinitionUri: ./statemachine/CreateAccount.asl.yaml
+      DefinitionSubstitutions:
+        Domain: !Ref Domain
+        System: !Ref System
+        Component: !Ref Component
+        CodeBranch: !Ref CodeBranch
+      Logging:
+        Level: ERROR
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt CreateAccountStateMachineLogGroup.Arn
+      # NOTE: Add policies here for any AWS services the state machine calls.
+      # See: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-policy-templates.html
+      Policies:
+        # Log delivery actions do not support resource-level permissions.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+              Resource: '*'
+
+  CreateAccountStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      # The /aws/vendedlogs/ prefix avoids CloudWatch Logs resource policy size limits.
+      LogGroupName: !Sub /aws/vendedlogs/states/${AWS::StackName}-CreateAccount
+      RetentionInDays: !Ref StateMachineLogRetentionInDays
+
+
+  ########
+  # API Gateway
+  ########
+  SiteCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref Hostname
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref Hostname
+          HostedZoneId: !Ref DnsZoneId
+
+  # Role API Gateway uses to start state machine executions.
+  RestApiIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ApiGatewayPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Ref CreateAccountStateMachine
+
+  RestApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/api-gateway/${AWS::StackName}"
+      RetentionInDays: 7
+
+  RestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref CodeBranch
+      Domain:
+        DomainName: !Ref Hostname
+        CertificateArn: !Ref SiteCertificate
+        Route53:
+          HostedZoneId: !Ref DnsZoneId
+        EndpointConfiguration: REGIONAL
+      AccessLogSetting:
+        DestinationArn: !GetAtt RestApiLogGroup.Arn
+        Format: '$context.extendedRequestId $context.identity.sourceIp $context.identity.caller $context.identity.user [$context.requestTime] "$context.httpMethod $context.resourcePath $context.protocol" $context.status $context.responseLength $context.requestId'
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: INFO
+          MetricsEnabled: true
+          DataTraceEnabled: false
+      DefinitionBody:
+        Fn::Transform:
+          Name: "AWS::Include"
+          Parameters:
+            Location: "openapi.yaml"
+
+
+  # SSM Values
+  CreateAccountStateMachineArnSsmParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Description: ARN of CreateAccount state machine
+      Name: !Sub /${Domain}/${System}/${Component}/${CodeBranch}/CreateAccountStateMachineArn
+      Value: !Ref CreateAccountStateMachine
+
+  CreateAccountStateMachineNameSsmParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Type: String
+      Description: Name of CreateAccount state machine
+      Name: !Sub /${Domain}/${System}/${Component}/${CodeBranch}/CreateAccountStateMachineName
+      Value: !GetAtt CreateAccountStateMachine.Name
+
+
+Outputs:
+  CreateAccountStateMachineArn:
+    Description: ARN of CreateAccount state machine
+    Value: !Ref CreateAccountStateMachine
+
+  CreateAccountStateMachineName:
+    Description: Name of CreateAccount state machine
+    Value: !GetAtt CreateAccountStateMachine.Name
+
+  ApiEndpoint:
+    Description: URL of the endpoint that starts the state machine
+    Value: !Sub https://${Hostname}/v1/account

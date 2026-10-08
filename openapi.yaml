@@ -1,0 +1,176 @@
+---
+openapi: 3.0.3
+info:
+  title: aws-accounts-api
+  description: |
+    Manage AWS accounts in environment using AWS Control Tower Service Catalog product
+  version: 1.0.0
+servers:
+  - url:
+      Fn::Sub: "https://${Hostname}"
+    description: Production endpoint
+x-amazon-apigateway-request-validators:
+  all:
+    validateRequestBody: true
+    validateRequestParameters: true
+x-amazon-apigateway-request-validator: "all"
+
+paths:
+  "/health":
+    get:
+      summary: Health check
+      description: Get health of endpoint
+      parameters:
+        - $ref: "#/components/parameters/headerContentTypeJson"
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthCheckResponse"
+      security:
+        - serverlessOpsCognitoPool:
+          - Fn::Sub: https://${Hostname}/health.read
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          "application/json": |
+            {
+              "statusCode": 200
+            }
+        responses:
+          "200":
+            statusCode: 200
+            responseTemplates:
+              "application/json": |
+                {
+                  "healthy": true
+                }
+
+  "/v1/account":
+    post:
+      summary: Start CreateAccount
+      description: Start an execution of the CreateAccount state machine
+      parameters:
+        - $ref: "#/components/parameters/headerContentTypeJson"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecutionInput"
+      responses:
+        '202':
+          description: The execution started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartExecutionResponse"
+        '400':
+          description: Client failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        '500':
+          description: Server failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - serverlessOpsCognitoPool:
+          - Fn::Sub: https://${Hostname}/account.write
+      x-amazon-apigateway-integration:
+        type: aws
+        httpMethod: POST
+        uri:
+          Fn::Sub: "arn:aws:apigateway:${AWS::Region}:states:action/StartExecution"
+        credentials:
+          Fn::GetAtt: [RestApiIamRole, Arn]
+        passthroughBehavior: never
+        requestTemplates:
+          # Pass the request body to the state machine as its input. Requests without
+          # a body start the state machine with an empty object.
+          "application/json":
+            Fn::Sub: |
+              {
+                "input": "$util.escapeJavaScript($input.json('$')).replaceAll("\\'", "'")",
+                "stateMachineArn": "${CreateAccountStateMachine}"
+              }
+        responses:
+          "4\\d{2}":
+            statusCode: 400
+            responseTemplates:
+              "application/json": |
+                {
+                  "name": "$util.escapeJavaScript($input.path('$.__type'))",
+                  "message": "$util.escapeJavaScript($input.path('$.message'))"
+                }
+          "5\\d{2}":
+            statusCode: 500
+            responseTemplates:
+              "application/json": |
+                {
+                  "name": "InternalServerError",
+                  "message": "Failed to start the state machine execution"
+                }
+          default:
+            statusCode: 202
+            responseTemplates:
+              "application/json": |
+                {
+                  "executionArn": "$input.path('$.executionArn')",
+                  "startDate": $input.path('$.startDate')
+                }
+
+components:
+  schemas:
+    ExecutionInput:
+      type: object
+      description: Input for the state machine execution
+      additionalProperties: true
+    StartExecutionResponse:
+      type: object
+      properties:
+        executionArn:
+          type: string
+        startDate:
+          type: number
+      required:
+        - executionArn
+    ErrorResponse:
+      type: object
+      properties:
+        name:
+          type: string
+        message:
+          type: string
+      required:
+        - message
+    HealthCheckResponse:
+      type: object
+      properties:
+        healthy:
+          type: boolean
+      required:
+        - healthy
+  parameters:
+    headerContentTypeJson:
+      name: Content-Type
+      in: header
+      schema:
+        type: string
+        default: application/json; charset=utf-8
+  securitySchemes:
+    serverlessOpsCognitoPool:
+      type: apiKey
+      name: Authorization
+      in: header
+      x-amazon-apigateway-authtype: COGNITO_USER_POOLS
+      x-amazon-apigateway-authorizer:
+        type: COGNITO_USER_POOLS
+        providerARNs:
+          - Ref: CognitoUserPoolArn
+        identitySource: method.request.header.Authorization

@@ -1,0 +1,30 @@
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: aws-accounts-api
+  description: API for managing AWS accounts
+  annotations:
+    github.com/project-slug: ServerlessOpsIO/aws-accounts-api
+spec:
+  type: service
+  lifecycle: production
+  owner: group:00gjdgxs1ur6lsu
+  system: system:backstage
+  providesApis:
+    - api:aws-accounts-api
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: aws-accounts-api
+  description: |
+    Manage AWS accounts in environment using AWS Control Tower Service Catalog product
+spec:
+  type: openapi
+  system: system:backstage
+  lifecycle: production
+  owner: group:00gjdgxs1ur6lsu
+  definition:
+    $text: https://github.com/ServerlessOpsIO/aws-accounts-api/blob/main/openapi.yaml

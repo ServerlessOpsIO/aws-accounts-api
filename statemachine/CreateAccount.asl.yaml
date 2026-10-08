@@ -1,0 +1,13 @@
+Comment: CreateAccount state machine for aws-accounts-api
+QueryLanguage: JSONata
+StartAt: ProcessInput
+States:
+  # Replace these states with your workflow. See the Amazon States Language
+  # reference: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-amazon-states-language.html
+  ProcessInput:
+    Type: Pass
+    Comment: Placeholder step; passes its input through unchanged.
+    Next: Done
+
+  Done:
+    Type: Succeed
