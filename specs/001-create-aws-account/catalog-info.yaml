@@ -1,0 +1,21 @@
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: aws-accounts-api-spec-001
+  title: "Create aws account"
+  description: "As a consumer of this API I can use it to create a new AWS account in the ServerlessOps environment.\n\nBy posting data to this API the API will initiate the process of creating an account. After the request is made the consumer should be able to check the progress of the initial transaction. The user should be able to see if the transaction has succeeded or failed, or if the transaction is still in progress, see what steps have completed and what steps still remain."
+  annotations:
+    github.com/project-slug: ServerlessOpsIO/aws-accounts-api
+    backstage.io/source-location: url:https://github.com/ServerlessOpsIO/aws-accounts-api/tree/main/specs/001-create-aws-account/
+  tags:
+    - speckit
+  links:
+    - url: https://github.com/ServerlessOpsIO/aws-accounts-api/blob/main/specs/001-create-aws-account/spec.md
+      title: Specification
+      icon: docs
+spec:
+  type: doc-spec
+  owner: group:00gjdgxs1ur6lsu
+  system: system:backstage
+  dependsOn:
+    - component:default/aws-accounts-api
