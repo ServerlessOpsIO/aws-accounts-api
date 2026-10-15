@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy in Control Tower management account 349603509961, in its home region.
+
+Parameters:
+  ExecutionRoleArn:
+    Type: String
+    AllowedPattern: 'arn:aws:iam::774305573766:role/.+'
+    Description: CreateAccountExecutionRoleArn output from the API stack
+  StateMachineArn:
+    Type: String
+    AllowedPattern: 'arn:aws:states:[a-z0-9-]+:774305573766:stateMachine:.+'
+    Description: CreateAccountStateMachineArn output from the API stack
+  AccountFactoryProductId:
+    Type: String
+    AllowedPattern: 'prod-[a-zA-Z0-9]+'
+    Description: Control Tower Account Factory product ID
+
+Resources:
+  AccountFactoryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: aws-accounts-api-account-factory
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref ExecutionRoleArn
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref StateMachineArn
+      Policies:
+        - PolicyName: AccountFactory
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: servicecatalog:ProvisionProduct
+                Resource: !Sub arn:${AWS::Partition}:catalog:${AWS::Region}:${AWS::AccountId}:product/${AccountFactoryProductId}
+              # These read actions do not support resource-level permissions.
+              - Effect: Allow
+                Action:
+                  - servicecatalog:DescribeRecord
+                  - organizations:ListRoots
+                  - organizations:ListOrganizationalUnitsForParent
+                Resource: '*'
+
+Outputs:
+  AccountFactoryRoleArn:
+    Description: Set AccountFactoryRoleArn in the API stack to this role
+    Value: !GetAtt AccountFactoryRole.Arn

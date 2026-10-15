@@ -1,13 +1,146 @@
 Comment: CreateAccount state machine for aws-accounts-api
 QueryLanguage: JSONata
+TimeoutSeconds: 7200
 StartAt: ProcessInput
 States:
-  # Replace these states with your workflow. See the Amazon States Language
-  # reference: https://docs.aws.amazon.com/step-functions/latest/dg/concepts-amazon-states-language.html
   ProcessInput:
     Type: Pass
-    Comment: Placeholder step; passes its input through unchanged.
-    Next: Done
+    Comment: Preserve the request and deployment-configured SSO values for Account Factory.
+    Assign:
+      request: "{% $states.input %}"
+      ssoFirstName: "${SSOUserFirstName}"
+      ssoLastName: "${SSOUserLastName}"
+      ssoEmail: "${SSOUserEmail}"
+      ouMatches: []
+      nextToken: ""
+    Next: ListRoots
+
+  ListRoots:
+    Type: Task
+    Comment: Find the organization root using the management-account role; read failures retry then fail.
+    Resource: arn:aws:states:::aws-sdk:organizations:listRoots
+    Credentials:
+      RoleArn: "${AccountFactoryRoleArn}"
+    Arguments: {}
+    Assign:
+      parents: "{% [$states.result.Roots.Id] %}"
+    Retry:
+      - ErrorEquals: [States.TaskFailed]
+        IntervalSeconds: 2
+        BackoffRate: 2
+        MaxAttempts: 3
+    Next: ListOrganizationalUnits
+
+  ListOrganizationalUnits:
+    Type: Task
+    Comment: Search all nested OUs and pages, rejecting missing or ambiguous names before provisioning.
+    Resource: arn:aws:states:::aws-sdk:organizations:listOrganizationalUnitsForParent
+    Credentials:
+      RoleArn: "${AccountFactoryRoleArn}"
+    Arguments: "{% $merge([{'ParentId': $parents[0], 'MaxResults': 20}, $nextToken != '' ? {'NextToken': $nextToken} : {}]) %}"
+    Assign:
+      ouMatches: "{% $append($ouMatches, [$states.result.OrganizationalUnits[Name = $request.ou_name]]) %}"
+      parents: "{% $append($exists($states.result.NextToken) ? $parents : $filter($parents, function($v, $i) { $i > 0 }), [$states.result.OrganizationalUnits.Id]) %}"
+      nextToken: "{% $exists($states.result.NextToken) ? $states.result.NextToken : '' %}"
+    Retry:
+      - ErrorEquals: [States.TaskFailed]
+        IntervalSeconds: 2
+        BackoffRate: 2
+        MaxAttempts: 3
+    Next: MoreOrganizationalUnits
+
+  MoreOrganizationalUnits:
+    Type: Choice
+    Comment: Finish traversing the organization before checking that the OU name is unique.
+    Choices:
+      - Condition: "{% $count($parents) > 0 %}"
+        Next: ListOrganizationalUnits
+    Default: CheckOrganizationalUnit
+
+  CheckOrganizationalUnit:
+    Type: Choice
+    Comment: Only provision into an OU whose name resolves to exactly one ID.
+    Choices:
+      - Condition: "{% $count($ouMatches) = 1 %}"
+        Next: ProvisionAccount
+    Default: InvalidOrganizationalUnit
+
+  InvalidOrganizationalUnit:
+    Type: Fail
+    Comment: Fail visibly in transaction history and ERROR logs without creating an account.
+    Error: InvalidOrganizationalUnit
+    Cause: ou_name must identify exactly one Control Tower enrolled organizational unit.
+
+  ProvisionAccount:
+    Type: Task
+    Comment: Provision Account Factory with a stable execution-name token so task retries are idempotent.
+    Resource: arn:aws:states:::aws-sdk:servicecatalog:provisionProduct
+    Credentials:
+      RoleArn: "${AccountFactoryRoleArn}"
+    Arguments:
+      ProductId: "${AccountFactoryProductId}"
+      ProvisioningArtifactId: "${AccountFactoryProvisioningArtifactId}"
+      ProvisionedProductName: "{% 'account-' & $states.context.Execution.Name %}"
+      ProvisionToken: "{% $states.context.Execution.Name %}"
+      ProvisioningParameters:
+        - Key: AccountName
+          Value: "{% $request.account_name %}"
+        - Key: AccountEmail
+          Value: "{% 'admin+' & $request.account_name & '@serverlessops.io' %}"
+        - Key: ManagedOrganizationalUnit
+          Value: "{% $ouMatches[0].Name & ' (' & $ouMatches[0].Id & ')' %}"
+        - Key: SSOUserFirstName
+          Value: "{% $ssoFirstName %}"
+        - Key: SSOUserLastName
+          Value: "{% $ssoLastName %}"
+        - Key: SSOUserEmail
+          Value: "{% $ssoEmail %}"
+    Assign:
+      recordId: "{% $states.result.RecordDetail.RecordId %}"
+    Retry:
+      - ErrorEquals: [States.TaskFailed]
+        IntervalSeconds: 5
+        BackoffRate: 2
+        MaxAttempts: 3
+    Next: WaitForAccount
+
+  WaitForAccount:
+    Type: Wait
+    Comment: Wait between asynchronous Account Factory record checks.
+    Seconds: 30
+    Next: DescribeRecord
+
+  DescribeRecord:
+    Type: Task
+    Comment: Read provisioning progress in the management account; read failures retry then fail.
+    Resource: arn:aws:states:::aws-sdk:servicecatalog:describeRecord
+    Credentials:
+      RoleArn: "${AccountFactoryRoleArn}"
+    Arguments:
+      Id: "{% $recordId %}"
+    Retry:
+      - ErrorEquals: [States.TaskFailed]
+        IntervalSeconds: 2
+        BackoffRate: 2
+        MaxAttempts: 3
+    Next: CheckRecord
+
+  CheckRecord:
+    Type: Choice
+    Comment: Wait until the provisioning record succeeds or fails, bounded by the workflow timeout.
+    Choices:
+      - Condition: "{% $states.input.RecordDetail.Status = 'SUCCEEDED' %}"
+        Next: Done
+      - Condition: "{% $states.input.RecordDetail.Status = 'FAILED' %}"
+        Next: AccountCreationFailed
+    Default: WaitForAccount
+
+  AccountCreationFailed:
+    Type: Fail
+    Comment: Surface Account Factory failure details in execution history and ERROR logs.
+    Error: AccountFactoryProvisioningFailed
+    Cause: "{% $string($states.input.RecordDetail.RecordErrors) %}"
 
   Done:
     Type: Succeed
+    Comment: Account Factory has completed; preserve the provisioning record and its outputs.

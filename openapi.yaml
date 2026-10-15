@@ -61,8 +61,8 @@ paths:
             schema:
               $ref: "#/components/schemas/ExecutionInput"
       responses:
-        '202':
-          description: The execution started
+        '201':
+          description: Account creation request accepted
           content:
             application/json:
               schema:
@@ -91,8 +91,6 @@ paths:
           Fn::GetAtt: [RestApiIamRole, Arn]
         passthroughBehavior: never
         requestTemplates:
-          # Pass the request body to the state machine as its input. Requests without
-          # a body start the state machine with an empty object.
           "application/json":
             Fn::Sub: |
               {
@@ -117,29 +115,133 @@ paths:
                   "message": "Failed to start the state machine execution"
                 }
           default:
-            statusCode: 202
+            statusCode: 201
             responseTemplates:
               "application/json": |
                 {
-                  "executionArn": "$input.path('$.executionArn')",
-                  "startDate": $input.path('$.startDate')
+                  "txn_id": "$input.path('$.executionArn')"
+                }
+
+  "/transactions":
+    get:
+      summary: Get transaction status and progress
+      description: Returns transaction status and the latest 100 progress events, newest first.
+      parameters:
+        - name: txn_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Transaction ID returned by POST /v1/account.
+      responses:
+        '200':
+          description: Transaction status and progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionResponse"
+        '400':
+          description: Invalid transaction ID
+        '500':
+          description: Unable to retrieve transaction
+      security:
+        - serverlessOpsCognitoPool:
+          - Fn::Sub: https://${Hostname}/account.read
+      x-amazon-apigateway-integration:
+        type: aws
+        httpMethod: POST
+        uri:
+          Fn::Sub: "arn:aws:apigateway:${AWS::Region}:states:action/GetExecutionHistory"
+        credentials:
+          Fn::GetAtt: [RestApiIamRole, Arn]
+        passthroughBehavior: never
+        requestTemplates:
+          application/json: |
+            {
+              "executionArn": "$util.escapeJavaScript($input.params('txn_id')).replaceAll("\\'", "'")",
+              "reverseOrder": true,
+              "maxResults": 100,
+              "includeExecutionData": false
+            }
+        responses:
+          "4\\d{2}":
+            statusCode: 400
+            responseTemplates:
+              application/json: '{"message": "Invalid transaction ID"}'
+          "5\\d{2}":
+            statusCode: 500
+            responseTemplates:
+              application/json: '{"message": "Unable to retrieve transaction"}'
+          default:
+            statusCode: 200
+            responseTemplates:
+              application/json: |
+                #set($status = "RUNNING")
+                #set($lifecycleFound = false)
+                #foreach($event in $input.path('$.events'))
+                  #if(!$lifecycleFound && $event.type.startsWith("Execution"))
+                    #set($lifecycleFound = true)
+                    #if($event.type == "ExecutionSucceeded")
+                      #set($status = "SUCCEEDED")
+                    #elseif($event.type == "ExecutionFailed")
+                      #set($status = "FAILED")
+                    #elseif($event.type == "ExecutionTimedOut")
+                      #set($status = "TIMED_OUT")
+                    #elseif($event.type == "ExecutionAborted")
+                      #set($status = "ABORTED")
+                    #end
+                  #end
+                #end
+                {
+                  "txn_id": "$util.escapeJavaScript($input.params('txn_id')).replaceAll("\\'", "'")",
+                  "status": "$status",
+                  "progress": $input.json('$.events')
                 }
 
 components:
   schemas:
     ExecutionInput:
       type: object
-      description: Input for the state machine execution
-      additionalProperties: true
+      description: Account Factory account request
+      required:
+        - account_name
+        - ou_name
+      properties:
+        account_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'
+          description: Account name used in admin+<account_name>@serverlessops.io.
+        ou_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+      additionalProperties: false
     StartExecutionResponse:
       type: object
       properties:
-        executionArn:
+        txn_id:
           type: string
-        startDate:
-          type: number
       required:
-        - executionArn
+        - txn_id
+    TransactionResponse:
+      type: object
+      required:
+        - txn_id
+        - status
+        - progress
+      properties:
+        txn_id:
+          type: string
+        status:
+          type: string
+          enum: [RUNNING, SUCCEEDED, FAILED, TIMED_OUT, ABORTED]
+        progress:
+          type: array
+          items:
+            type: object
+          description: Step Functions history events, including the current workflow step.
     ErrorResponse:
       type: object
       properties:

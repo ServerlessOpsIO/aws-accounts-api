@@ -35,6 +35,37 @@ Parameters:
     Type: String
     Description: Cognito User Pool ARN
 
+  AccountFactoryRoleArn:
+    Type: String
+    Default: arn:aws:iam::349603509961:role/aws-accounts-api-account-factory
+    AllowedPattern: 'arn:aws:iam::349603509961:role/[a-zA-Z0-9+=,.@_/-]+'
+    Description: Management-account role used for Account Factory operations
+
+  AccountFactoryProductId:
+    Type: String
+    AllowedPattern: 'prod-[a-zA-Z0-9]+'
+    Description: Control Tower Account Factory Service Catalog product ID
+
+  AccountFactoryProvisioningArtifactId:
+    Type: String
+    AllowedPattern: 'pa-[a-zA-Z0-9]+'
+    Description: Active provisioning artifact ID for the Account Factory product
+
+  SSOUserFirstName:
+    Type: String
+    MinLength: 1
+    Description: Account Factory SSO user first name
+
+  SSOUserLastName:
+    Type: String
+    MinLength: 1
+    Description: Account Factory SSO user last name
+
+  SSOUserEmail:
+    Type: String
+    MinLength: 1
+    Description: Account Factory SSO user email
+
   StateMachineLogRetentionInDays:
     Type: Number
     Description: "Number of days to retain state machine logs"
@@ -55,14 +86,18 @@ Resources:
         System: !Ref System
         Component: !Ref Component
         CodeBranch: !Ref CodeBranch
+        AccountFactoryRoleArn: !Ref AccountFactoryRoleArn
+        AccountFactoryProductId: !Ref AccountFactoryProductId
+        AccountFactoryProvisioningArtifactId: !Ref AccountFactoryProvisioningArtifactId
+        SSOUserFirstName: !Ref SSOUserFirstName
+        SSOUserLastName: !Ref SSOUserLastName
+        SSOUserEmail: !Ref SSOUserEmail
       Logging:
         Level: ERROR
         IncludeExecutionData: true
         Destinations:
           - CloudWatchLogsLogGroup:
               LogGroupArn: !GetAtt CreateAccountStateMachineLogGroup.Arn
-      # NOTE: Add policies here for any AWS services the state machine calls.
-      # See: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-policy-templates.html
       Policies:
         # Log delivery actions do not support resource-level permissions.
         - Statement:
@@ -77,6 +112,9 @@ Resources:
                 - logs:DescribeResourcePolicies
                 - logs:DescribeLogGroups
               Resource: '*'
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Ref AccountFactoryRoleArn
 
   CreateAccountStateMachineLogGroup:
     Type: AWS::Logs::LogGroup
@@ -98,7 +136,7 @@ Resources:
         - DomainName: !Ref Hostname
           HostedZoneId: !Ref DnsZoneId
 
-  # Role API Gateway uses to start state machine executions.
+  # Role API Gateway uses to start executions and read transaction progress.
   RestApiIamRole:
     Type: AWS::IAM::Role
     Properties:
@@ -118,6 +156,9 @@ Resources:
                 Action:
                   - states:StartExecution
                 Resource: !Ref CreateAccountStateMachine
+              - Effect: Allow
+                Action: states:GetExecutionHistory
+                Resource: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${CreateAccountStateMachine.Name}:*
 
   RestApiLogGroup:
     Type: AWS::Logs::LogGroup
@@ -177,6 +218,10 @@ Outputs:
   CreateAccountStateMachineName:
     Description: Name of CreateAccount state machine
     Value: !GetAtt CreateAccountStateMachine.Name
+
+  CreateAccountExecutionRoleArn:
+    Description: Execution role ARN to trust in the management-account stack
+    Value: !GetAtt CreateAccountStateMachineRole.Arn
 
   ApiEndpoint:
     Description: URL of the endpoint that starts the state machine
