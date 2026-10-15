@@ -1,0 +1,200 @@
+openapi: 3.0.3
+info:
+  title: Account Factory API design contract
+  version: 0.1.0
+  description: Planning artifact only; not the deployed API Gateway definition.
+security:
+  - cognito: []
+paths:
+  /v1/account:
+    post:
+      operationId: createAccount
+      description: Accept asynchronous provisioning; requires account.write scope.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          description: Optional UUID retry reference scoped to the consumer.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountRequest'
+      responses:
+        '201':
+          description: Workflow start confirmed or identical accepted request replayed.
+          headers:
+            Location:
+              description: Relative URL /transactions?txn_id=<returned UUID>.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [txn_id]
+                properties:
+                  txn_id:
+                    type: string
+                    format: uuid
+        '400':
+          $ref: '#/components/responses/Invalid'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Conflicting retry reference or known email reservation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /transactions:
+    get:
+      operationId: getTransaction
+      description: Read one owned transaction; requires transactions.read scope. Not a listing endpoint.
+      parameters:
+        - in: query
+          name: txn_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Durable outcome and all ordered milestones.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/Invalid'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Same safe response for unknown, expired and other-consumer IDs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    cognito:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Existing Cognito authorizer with operation-specific OAuth scopes.
+  schemas:
+    AccountRequest:
+      type: object
+      additionalProperties: false
+      required: [account_name, ou_name]
+      properties:
+        account_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+        ou_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Exact deployment-approved registered OU name.
+    Transaction:
+      type: object
+      additionalProperties: false
+      required: [txn_id, status, accepted_at, updated_at, steps]
+      properties:
+        txn_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [in_progress, succeeded, failed]
+        accepted_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          description: Required on terminal transactions.
+        account_id:
+          type: string
+          pattern: '^[0-9]{12}$'
+          description: Required on success and retained on failure when known.
+        steps:
+          type: array
+          minItems: 4
+          items:
+            $ref: '#/components/schemas/Step'
+        error:
+          $ref: '#/components/schemas/Error'
+    Step:
+      type: object
+      additionalProperties: false
+      required: [id, name, status]
+      properties:
+        id:
+          type: string
+          enum: [validate_eligibility, request_account_creation, wait_for_account_creation, confirm_environment_enrollment]
+        name:
+          type: string
+        status:
+          type: string
+          enum: [not_started, in_progress, awaiting_retry, completed, failed, not_performed]
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          description: Required for completed or failed milestones.
+        error:
+          $ref: '#/components/schemas/Error'
+    Error:
+      type: object
+      additionalProperties: false
+      required: [category, message]
+      properties:
+        category:
+          type: string
+        message:
+          type: string
+          description: Safe consumer-facing explanation, never raw AWS diagnostics.
+        step_id:
+          type: string
+        fields:
+          type: array
+          items:
+            type: string
+  responses:
+    Invalid:
+      description: Invalid input with affected field names where applicable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid authentication.
+    Forbidden:
+      description: Missing required operation scope.
+    Unavailable:
+      description: Acceptance/retrieval unavailable; not a provisioning outcome.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
